@@ -1,30 +1,32 @@
 'use client';
 
-import { useState } from 'react';
-import { stockItems, suppliers, categories } from '@/data/staticData';
-import { StockItem } from '@/types';
+import { useMemo, useState } from 'react';
+import { useProducts } from '@/hooks/useApiData';
 
 export default function StockInventory() {
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSupplier, setSelectedSupplier] = useState('All Suppliers');
   const [selectedCategory, setSelectedCategory] = useState('All Categories');
-  const [selectedStatus, setSelectedStatus] = useState('All Status');
 
-  const filteredItems = stockItems.filter((item) => {
-    const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.batchNumber.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesSupplier = selectedSupplier === 'All Suppliers' || item.supplier === selectedSupplier;
-    const matchesCategory = selectedCategory === 'All Categories' || item.category === selectedCategory;
-    const matchesStatus = selectedStatus === 'All Status' || item.status === selectedStatus;
+  const { data: products, loading, error, refresh } = useProducts();
 
-    return matchesSearch && matchesSupplier && matchesCategory && matchesStatus;
+  const categories = useMemo(() => {
+    const unique = new Set(products.map((product) => product.category));
+    return ['All Categories', ...Array.from(unique)];
+  }, [products]);
+
+  const filteredItems = products.filter((item) => {
+    const matchesSearch =
+      item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.description.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesCategory =
+      selectedCategory === 'All Categories' || item.category === selectedCategory;
+
+    return matchesSearch && matchesCategory;
   });
 
   const handleClearFilters = () => {
     setSearchTerm('');
-    setSelectedSupplier('All Suppliers');
     setSelectedCategory('All Categories');
-    setSelectedStatus('All Status');
   };
 
   return (
@@ -58,42 +60,21 @@ export default function StockInventory() {
           </div>
 
           <select
-            value={selectedSupplier}
-            onChange={(e) => setSelectedSupplier(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option>All Suppliers</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier} value={supplier}>{supplier}</option>
-            ))}
-          </select>
-
-          <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
-            <option>All Categories</option>
             {categories.map((category) => (
-              <option key={category} value={category}>{category}</option>
+              <option key={category} value={category}>
+                {category}
+              </option>
             ))}
-          </select>
-
-          <select
-            value={selectedStatus}
-            onChange={(e) => setSelectedStatus(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option>All Status</option>
-            <option>Fresh</option>
-            <option>Near Expiry</option>
-            <option>Expired</option>
           </select>
         </div>
 
         <div className="flex items-center justify-between mt-4">
           <div className="text-sm text-gray-600">
-            Showing {filteredItems.length} of {stockItems.length} items
+            Showing {filteredItems.length} of {products.length} products
           </div>
           <button
             onClick={handleClearFilters}
@@ -106,45 +87,37 @@ export default function StockInventory() {
 
       {/* Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
+        {loading && <div className="p-4 text-sm text-gray-600">Loading products...</div>}
+        {error && (
+          <div className="p-4 bg-red-50 border-b border-red-200 text-sm text-red-700 flex items-center justify-between">
+            <span>Failed to load product catalog.</span>
+            <button onClick={refresh} className="px-3 py-1 text-xs bg-red-600 text-white rounded">
+              Retry
+            </button>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Batch</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Supplier</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mfg Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expiry Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Days to Expiry</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Standard Price</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredItems.map((item) => (
-                <tr key={item.stockItemId} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.productName}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.batchNumber}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.supplier}</td>
+                <tr key={item.productId} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.name}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.category}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.quantity}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.manufacturingDate}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.expiryDate}</td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
-                    item.daysToExpiry <= 3 ? 'text-red-600' : 'text-green-600'
-                  }`}>
-                    {item.daysToExpiry} days
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    $
+                    {typeof item.standardPrice === 'number'
+                      ? item.standardPrice.toFixed(2)
+                      : Number(item.standardPrice ?? 0).toFixed(2)}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-                      item.status === 'Fresh'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-yellow-100 text-yellow-800'
-                    }`}>
-                      {item.status}
-                    </span>
-                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-500">{item.description || '—'}</td>
                 </tr>
               ))}
             </tbody>

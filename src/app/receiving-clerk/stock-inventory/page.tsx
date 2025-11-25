@@ -1,30 +1,63 @@
 'use client';
 
-import { useState } from 'react';
-import { stockItems, suppliers, categories } from '@/data/staticData';
-import { StockItem } from '@/types';
+import { useMemo, useState } from 'react';
+import { useLots, useSuppliers } from '@/hooks/useApiData';
+
+type InventoryRecord = {
+  lotId: number;
+  lotName: string;
+  supplierName: string;
+  units: number;
+  productCount: number;
+  arrivalDate: string;
+  status: 'Healthy' | 'Needs Attention';
+};
 
 export default function ReceivingClerkStockInventory() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState('All Suppliers');
-  const [selectedCategory, setSelectedCategory] = useState('All Categories');
-  const [selectedStatus, setSelectedStatus] = useState('All Status');
+  const [selectedStatus, setSelectedStatus] = useState<'All' | InventoryRecord['status']>('All');
 
-  const filteredItems = stockItems.filter((item) => {
-    const matchesSearch = item.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.batchNumber.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesSupplier = selectedSupplier === 'All Suppliers' || item.supplier === selectedSupplier;
-    const matchesCategory = selectedCategory === 'All Categories' || item.category === selectedCategory;
-    const matchesStatus = selectedStatus === 'All Status' || item.status === selectedStatus;
+  const { data: lots, loading: lotsLoading, error: lotsError, refresh: refreshLots } = useLots();
+  const {
+    data: suppliers,
+    loading: suppliersLoading,
+    error: suppliersError,
+    refresh: refreshSuppliers,
+  } = useSuppliers();
 
-    return matchesSearch && matchesSupplier && matchesCategory && matchesStatus;
+  const derivedRecords = useMemo<InventoryRecord[]>(() => {
+    return lots.map((lot) => {
+      const supplierName =
+        suppliers.find((supplier) => supplier.SUPPLIER_ID === lot.SUPPLIER_ID)?.SUPPLIER_NAME ||
+        'Unknown Supplier';
+      const status: InventoryRecord['status'] = lot.LOT_QUANTITY >= 100 ? 'Healthy' : 'Needs Attention';
+      return {
+        lotId: lot.LOT_ID,
+        lotName: lot.LOT_NAME,
+        supplierName,
+        units: lot.LOT_QUANTITY,
+        productCount: lot.LOT_PRODUCT_COUNT,
+        arrivalDate: lot.LOT_DATE_OF_ARRIVAL,
+        status,
+      };
+    });
+  }, [lots, suppliers]);
+
+  const filteredItems = derivedRecords.filter((record) => {
+    const matchesSearch =
+      record.lotName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      record.supplierName.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSupplier =
+      selectedSupplier === 'All Suppliers' || record.supplierName === selectedSupplier;
+    const matchesStatus = selectedStatus === 'All' || record.status === selectedStatus;
+    return matchesSearch && matchesSupplier && matchesStatus;
   });
 
   const handleClearFilters = () => {
     setSearchTerm('');
     setSelectedSupplier('All Suppliers');
-    setSelectedCategory('All Categories');
-    setSelectedStatus('All Status');
+    setSelectedStatus('All');
   };
 
   return (
@@ -64,36 +97,26 @@ export default function ReceivingClerkStockInventory() {
           >
             <option>All Suppliers</option>
             {suppliers.map((supplier) => (
-              <option key={supplier} value={supplier}>{supplier}</option>
-            ))}
-          </select>
-
-          <select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option>All Categories</option>
-            {categories.map((category) => (
-              <option key={category} value={category}>{category}</option>
+              <option key={supplier.SUPPLIER_ID} value={supplier.SUPPLIER_NAME}>
+                {supplier.SUPPLIER_NAME}
+              </option>
             ))}
           </select>
 
           <select
             value={selectedStatus}
-            onChange={(e) => setSelectedStatus(e.target.value)}
+            onChange={(e) => setSelectedStatus(e.target.value as InventoryRecord['status'] | 'All')}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
-            <option>All Status</option>
-            <option>Fresh</option>
-            <option>Near Expiry</option>
-            <option>Expired</option>
+            <option value="All">All Status</option>
+            <option value="Healthy">Healthy</option>
+            <option value="Needs Attention">Needs Attention</option>
           </select>
         </div>
 
         <div className="flex items-center justify-between mt-4">
           <div className="text-sm text-gray-600">
-            Showing {filteredItems.length} of {stockItems.length} items
+            Showing {filteredItems.length} of {derivedRecords.length} lots
           </div>
           <button
             onClick={handleClearFilters}
@@ -106,42 +129,49 @@ export default function ReceivingClerkStockInventory() {
 
       {/* Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
+        {(lotsLoading || suppliersLoading) && (
+          <div className="p-4 text-sm text-gray-600">Loading inventory data...</div>
+        )}
+        {(lotsError || suppliersError) && (
+          <div className="p-4 bg-red-50 border-b border-red-200 text-sm text-red-700 flex items-center justify-between">
+            <span>Failed to load data.</span>
+            <button
+              onClick={() => {
+                refreshLots();
+                refreshSuppliers();
+              }}
+              className="px-3 py-1 text-xs bg-red-600 text-white rounded"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Batch</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lot Name</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Supplier</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Mfg Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expiry Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Days to Expiry</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Units</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Products</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Arrival Date</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredItems.map((item) => (
-                <tr key={item.stockItemId} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.productName}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.batchNumber}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.supplier}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.category}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.quantity}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.manufacturingDate}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.expiryDate}</td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
-                    item.daysToExpiry <= 3 ? 'text-red-600' : 'text-green-600'
-                  }`}>
-                    {item.daysToExpiry} days
-                  </td>
+                <tr key={item.lotId} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.lotName}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.supplierName}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.units}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.productCount}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.arrivalDate}</td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-                      item.status === 'Fresh'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-yellow-100 text-yellow-800'
-                    }`}>
+                    <span
+                      className={`px-3 py-1 text-xs font-medium rounded-full ${
+                        item.status === 'Healthy' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                      }`}
+                    >
                       {item.status}
                     </span>
                   </td>

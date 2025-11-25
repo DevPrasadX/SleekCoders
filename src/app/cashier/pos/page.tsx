@@ -1,19 +1,37 @@
 'use client';
 
-import { useState } from 'react';
-import { recentTransactions } from '@/data/staticData';
+import { useMemo, useState } from 'react';
+import { useProducts } from '@/hooks/useApiData';
 
 export default function POSIntegration() {
   const [transactionsToday] = useState(287);
   const [itemsSoldToday] = useState(543);
   const [nearExpirySold] = useState(34);
   const [isSyncActive] = useState(true);
+  const { data: products, loading, error, refresh } = useProducts();
 
-  const displayTransactions = recentTransactions.slice(0, 5);
-  const stockUpdates = recentTransactions.map(txn => ({
+  const transactionFeed = useMemo(() => {
+    return products.map((product, index) => {
+      const quantity = (index % 5) + 1;
+      return {
+        transactionId: `TXN-${5600 + index}`,
+        transactionDate: `${9 + (index % 3)}:${20 + index} AM`,
+        product: product.name,
+        batch: `LOT-${product.productId ?? index}`.toUpperCase(),
+        quantity,
+        price: product.standardPrice * quantity,
+        stockBefore: 100 - index * 2,
+        stockAfter: 100 - index * 2 - quantity,
+        cashier: index % 2 === 0 ? 'Mike Cashier' : 'Sarah Clerk',
+      };
+    });
+  }, [products]);
+
+  const displayTransactions = transactionFeed.slice(0, 5);
+  const stockUpdates = transactionFeed.slice(0, 5).map((txn) => ({
     product: txn.product,
     batch: txn.batch,
-    status: 'Near Expiry',
+    status: txn.quantity > 3 ? 'High Demand' : 'Steady',
     stockChange: -txn.quantity,
     currentStock: txn.stockAfter,
   }));
@@ -62,6 +80,15 @@ export default function POSIntegration() {
       </div>
 
       {/* Content Grid */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded flex items-center justify-between text-sm">
+          <span>Could not load product catalog.</span>
+          <button onClick={refresh} className="underline">
+            Retry
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Transactions */}
         <div className="bg-white rounded-lg shadow p-6">
@@ -72,7 +99,8 @@ export default function POSIntegration() {
             <h3 className="text-lg font-semibold text-gray-800">Recent Transactions</h3>
           </div>
           <div className="space-y-3">
-            {displayTransactions.map((txn) => (
+            {loading && <p className="text-sm text-gray-500">Loading transactions...</p>}
+            {!loading && displayTransactions.map((txn) => (
               <div key={txn.transactionId} className="flex items-center justify-between border-b pb-3 last:border-0">
                 <div className="flex items-center space-x-3">
                   <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -101,7 +129,8 @@ export default function POSIntegration() {
             <h3 className="text-lg font-semibold text-gray-800">Real-time Stock Updates</h3>
           </div>
           <div className="space-y-3">
-            {stockUpdates.slice(0, 5).map((update, index) => (
+            {loading && <p className="text-sm text-gray-500">Waiting for stock updates...</p>}
+            {!loading && stockUpdates.slice(0, 5).map((update, index) => (
               <div key={index} className="flex items-center justify-between border-b pb-3 last:border-0">
                 <div>
                   <div className="font-medium text-gray-800">{update.product}</div>
@@ -144,7 +173,7 @@ export default function POSIntegration() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {recentTransactions.map((txn) => (
+              {transactionFeed.map((txn) => (
                 <tr key={txn.transactionId} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm text-gray-900">{txn.transactionId}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{txn.transactionDate}</td>

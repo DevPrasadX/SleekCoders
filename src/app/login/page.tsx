@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { UserRole } from '@/types';
-import { users } from '@/data/staticData';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,28 +10,56 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole | ''>('');
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const roles: UserRole[] = ['Store Manager', 'Receiving Clerk', 'Cashier'];
 
-  const handleLogin = () => {
-    const user = users.find(
-      (u) => u.userName.toLowerCase().includes(email.toLowerCase()) && password === 'pass'
-    );
-    
-    if (user && role === user.role) {
-      // Store user in sessionStorage
-      sessionStorage.setItem('user', JSON.stringify(user));
-      
-      // Redirect based on role
+  const handleLogin = async () => {
+    if (!role) {
+      setErrorMessage('Please select a role');
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, role }),
+      });
+
+      if (!response.ok) {
+        const { error } = await response.json();
+        throw new Error(error || 'Login failed');
+      }
+
+      const user = await response.json();
+
+      sessionStorage.setItem(
+        'user',
+        JSON.stringify({
+          userId: user.employeeID,
+          userName: user.employeeName,
+          role: user.employeeRole,
+          email: user.employeeEmail,
+        }),
+      );
+
       if (role === 'Store Manager') {
         router.push('/store-manager/dashboard');
       } else if (role === 'Receiving Clerk') {
         router.push('/receiving-clerk/dashboard');
-      } else if (role === 'Cashier') {
+      } else {
         router.push('/cashier/dashboard');
       }
-    } else {
-      alert('Invalid credentials or role mismatch');
+    } catch (error) {
+      const err = error as Error;
+      setErrorMessage(err.message);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -117,12 +144,20 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <button
-            onClick={handleLogin}
-            className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-          >
-            Login
-          </button>
+          <div className="space-y-3">
+            {errorMessage && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 text-sm rounded-lg">
+                {errorMessage}
+              </div>
+            )}
+            <button
+              onClick={handleLogin}
+              disabled={submitting}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {submitting ? 'Signing in...' : 'Login'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

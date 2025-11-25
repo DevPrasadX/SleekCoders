@@ -1,12 +1,16 @@
 'use client';
 
-import { stockItems, shipments } from '@/data/staticData';
+import { useDashboardMetrics } from '@/hooks/useApiData';
 
 export default function StoreManagerDashboard() {
-  const expiringSoon = stockItems.filter(item => item.status === 'Near Expiry').length;
-  const recentShipmentsCount = shipments.filter(s => s.status === 'Processed').length;
-  const itemsExpiringSoon = stockItems.filter(item => item.status === 'Near Expiry').slice(0, 4);
-  const recentShipments = shipments.slice(0, 4);
+  const { totals, loading, error, refresh, products, suppliers, lots } = useDashboardMetrics();
+  const latestLots = [...lots]
+    .sort(
+      (a, b) =>
+        new Date(b.LOT_DATE_OF_ARRIVAL).getTime() - new Date(a.LOT_DATE_OF_ARRIVAL).getTime()
+    )
+    .slice(0, 4);
+  const catalogPreview = products.slice(0, 4);
 
   return (
     <div className="space-y-6">
@@ -17,45 +21,29 @@ export default function StoreManagerDashboard() {
 
       {/* Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <MetricCard
-          title="Total Stock Items"
-          value="2,847"
-          change="+12% from last month"
-          changeColor="green"
-          icon={<BoxIcon />}
-        />
-        <MetricCard
-          title="Expiring Soon"
-          value={expiringSoon.toString()}
-          description="Within next 7 days"
-          icon={<WarningIcon />}
-          iconColor="yellow"
-        />
-        <MetricCard
-          title="Recent Shipments"
-          value={recentShipmentsCount.toString()}
-          description="Last 7 days"
-          icon={<ShipmentIcon />}
-        />
-        <MetricCard
-          title="Waste This Month"
-          value="8.2%"
-          change="-2.1% from last month"
-          changeColor="green"
-          icon={<ChartIcon />}
-        />
+        <MetricCard title="Products" value={totals.productCount.toString()} description="Active catalog items" icon={<BoxIcon />} />
+        <MetricCard title="Suppliers" value={totals.supplierCount.toString()} description="Trusted partners" icon={<ShipmentIcon />} />
+        <MetricCard title="Employees" value={totals.employeeCount.toString()} description="System users" icon={<ChartIcon />} />
+        <MetricCard title="Lot Quantity" value={totals.totalLotQuantity.toString()} description="Units across lots" icon={<WarningIcon />} iconColor="yellow" />
       </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard title="Stock Utilization & Waste" />
-        <ChartCard title="Waste by Category" />
-      </div>
+      {(loading || error) && (
+        <div className="bg-white border rounded-lg p-4 flex items-center justify-between">
+          <div>
+            {loading && <p className="text-sm text-gray-600">Loading metrics...</p>}
+            {error && <p className="text-sm text-red-600">Failed to load one or more datasets.</p>}
+          </div>
+          {!loading && error && (
+            <button onClick={refresh} className="px-4 py-2 bg-blue-600 text-white text-sm rounded">
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
-      {/* Lists */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ItemsExpiringSoon items={itemsExpiringSoon} />
-        <RecentShipments shipments={recentShipments} />
+        <ItemsExpiringSoon items={catalogPreview} />
+        <RecentShipments shipments={latestLots} suppliers={suppliers} />
       </div>
     </div>
   );
@@ -94,18 +82,19 @@ function ItemsExpiringSoon({ items }: { items: any[] }) {
       <h3 className="text-lg font-semibold text-gray-800 mb-4">Items Expiring Soon</h3>
       <div className="space-y-4">
         {items.map((item) => (
-          <div key={item.stockItemId} className="flex items-center justify-between border-b pb-4 last:border-0">
+          <div key={item.productId ?? item.name} className="flex items-center justify-between border-b pb-4 last:border-0">
             <div>
-              <div className="font-medium text-gray-800">{item.productName}</div>
-              <div className="text-sm text-gray-500">Batch: {item.batchNumber}</div>
+              <div className="font-medium text-gray-800">{item.name}</div>
+              <div className="text-sm text-gray-500">{item.category}</div>
             </div>
             <div className="text-right">
-              <div className={`inline-block px-3 py-1 rounded-full text-sm ${
-                item.daysToExpiry <= 1 ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-              }`}>
-                {item.daysToExpiry} {item.daysToExpiry === 1 ? 'day' : 'days'}
+              <div className="inline-block px-3 py-1 rounded-full text-sm bg-blue-50 text-blue-700">
+                $
+                {typeof item.standardPrice === 'number'
+                  ? item.standardPrice.toFixed(2)
+                  : Number(item.standardPrice ?? 0).toFixed(2)}
               </div>
-              <div className="text-xs text-gray-500 mt-1">{item.expiryDate}</div>
+              <div className="text-xs text-gray-500 mt-1">Catalog listing</div>
             </div>
           </div>
         ))}
@@ -114,24 +103,25 @@ function ItemsExpiringSoon({ items }: { items: any[] }) {
   );
 }
 
-function RecentShipments({ shipments }: { shipments: any[] }) {
+function RecentShipments({ shipments, suppliers }: { shipments: any[]; suppliers: any[] }) {
   return (
     <div className="bg-white rounded-lg shadow p-6">
       <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Shipments</h3>
       <div className="space-y-4">
         {shipments.map((shipment) => (
-          <div key={shipment.shipmentId} className="flex items-center justify-between border-b pb-4 last:border-0">
+          <div key={shipment.LOT_ID} className="flex items-center justify-between border-b pb-4 last:border-0">
             <div>
-              <div className="font-medium text-gray-800">{shipment.shipmentId}</div>
-              <div className="text-sm text-gray-500">{shipment.supplier}</div>
+              <div className="font-medium text-gray-800">{shipment.LOT_NAME}</div>
+              <div className="text-sm text-gray-500">
+                Supplier:{' '}
+                {suppliers.find((s: any) => s.SUPPLIER_ID === shipment.SUPPLIER_ID)?.SUPPLIER_NAME || 'Unknown'}
+              </div>
             </div>
             <div className="text-right">
-              <div className="text-sm text-gray-600">{shipment.itemCount} items</div>
-              <div className={`inline-block px-3 py-1 rounded-full text-xs mt-1 ${
-                shipment.status === 'Processed' ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600'
-              }`}>
-                {shipment.status}
+              <div className="text-sm text-gray-600">
+                Qty: {shipment.LOT_QUANTITY} • Products: {shipment.LOT_PRODUCT_COUNT}
               </div>
+              <div className="text-xs text-gray-500 mt-1">Arrived {shipment.LOT_DATE_OF_ARRIVAL}</div>
             </div>
           </div>
         ))}

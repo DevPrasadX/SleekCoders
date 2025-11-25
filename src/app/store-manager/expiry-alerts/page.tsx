@@ -1,23 +1,68 @@
 'use client';
 
-import { useState } from 'react';
-import { expiryAlerts } from '@/data/staticData';
-import { ExpiryAlert } from '@/types';
+import { useMemo, useState } from 'react';
+import { useLots, useProducts, useSuppliers } from '@/hooks/useApiData';
+
+type Priority = 'Critical' | 'High Priority' | 'Medium Priority';
+
+type AlertRecord = {
+  lotId: number;
+  lotName: string;
+  supplierName: string;
+  quantity: number;
+  productCount: number;
+  arrivalDate: string;
+  priority: Priority;
+};
 
 export default function ExpiryAlerts() {
-  const [selectedPriority, setSelectedPriority] = useState<'Critical' | 'High Priority' | 'Medium Priority'>('Critical');
+  const [selectedPriority, setSelectedPriority] = useState<Priority>('Critical');
+  const { data: lots, loading: lotsLoading, error: lotsError, refresh: refreshLots } = useLots();
+  const {
+    data: suppliers,
+    loading: suppliersLoading,
+    error: suppliersError,
+    refresh: refreshSuppliers,
+  } = useSuppliers();
+  const { data: products, loading: productsLoading, error: productsError, refresh: refreshProducts } = useProducts();
 
-  const criticalAlerts = expiryAlerts.filter(a => a.priority === 'Critical');
-  const highPriorityAlerts = expiryAlerts.filter(a => a.priority === 'High Priority');
-  const mediumPriorityAlerts = expiryAlerts.filter(a => a.priority === 'Medium Priority');
+  const alerts = useMemo<AlertRecord[]>(() => {
+    return lots.map((lot) => {
+      let priority: Priority = 'Medium Priority';
+      if (lot.LOT_QUANTITY <= 40) {
+        priority = 'Critical';
+      } else if (lot.LOT_QUANTITY <= 80) {
+        priority = 'High Priority';
+      }
 
-  const getFilteredAlerts = () => {
-    if (selectedPriority === 'Critical') return criticalAlerts;
-    if (selectedPriority === 'High Priority') return highPriorityAlerts;
-    return mediumPriorityAlerts;
-  };
+      const supplierName =
+        suppliers.find((supplier) => supplier.SUPPLIER_ID === lot.SUPPLIER_ID)?.SUPPLIER_NAME ||
+        'Unknown Supplier';
 
-  const filteredAlerts = getFilteredAlerts();
+      return {
+        lotId: lot.LOT_ID,
+        lotName: lot.LOT_NAME,
+        supplierName,
+        quantity: lot.LOT_QUANTITY,
+        productCount: lot.LOT_PRODUCT_COUNT,
+        arrivalDate: lot.LOT_DATE_OF_ARRIVAL,
+        priority,
+      };
+    });
+  }, [lots, suppliers]);
+
+  const priorityCounts = alerts.reduce(
+    (acc, alert) => {
+      acc[alert.priority] = (acc[alert.priority] || 0) + 1;
+      return acc;
+    },
+    { 'Critical': 0, 'High Priority': 0, 'Medium Priority': 0 } as Record<Priority, number>,
+  );
+
+  const filteredAlerts = alerts.filter((alert) => alert.priority === selectedPriority);
+
+  const loading = lotsLoading || suppliersLoading || productsLoading;
+  const error = lotsError || suppliersError || productsError;
 
   return (
     <div className="space-y-6">
@@ -26,44 +71,44 @@ export default function ExpiryAlerts() {
           <h1 className="text-3xl font-bold text-gray-800">Expiry Alerts Dashboard</h1>
           <p className="text-gray-600 mt-1">Manage upcoming expirations and apply promotional markdowns.</p>
         </div>
-        <div className="flex space-x-3">
-          <button className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center space-x-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            <span>Export Expiry Report</span>
+        {error && (
+          <button
+            className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium"
+            onClick={() => {
+              refreshLots();
+              refreshSuppliers();
+              refreshProducts();
+            }}
+          >
+            Retry data sync
           </button>
-          <button className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center space-x-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-            <span>Export Waste Report</span>
-          </button>
-        </div>
+        )}
       </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <SummaryCard title="Critical Alerts" value={criticalAlerts.length} description="Expiring within 24 hours" color="red" />
-        <SummaryCard title="High Priority" value={highPriorityAlerts.length} description="Expiring within 2 days" color="orange" />
-        <SummaryCard title="Medium Priority" value={mediumPriorityAlerts.length} description="Expiring within 7 days" color="yellow" />
-        <SummaryCard title="Alert Threshold" value="7 days" description="Configurable setting" isInput={true} />
+        <SummaryCard title="Critical Alerts" value={priorityCounts['Critical']} description="≤ 40 units remaining" color="red" />
+        <SummaryCard title="High Priority" value={priorityCounts['High Priority']} description="41-80 units remaining" color="orange" />
+        <SummaryCard title="Medium Priority" value={priorityCounts['Medium Priority']} description="> 80 units remaining" color="yellow" />
+        <SummaryCard title="Active Products" value={products.length} description="From Product table" isInput />
       </div>
+
+      {loading && <div className="bg-white rounded-lg border p-4 text-sm text-gray-600">Loading alerts...</div>}
 
       {/* Filter Tabs */}
       <div className="flex space-x-2 border-b border-gray-200">
         <TabButton
-          label={`Critical (${criticalAlerts.length})`}
+          label={`Critical (${priorityCounts['Critical']})`}
           isActive={selectedPriority === 'Critical'}
           onClick={() => setSelectedPriority('Critical')}
         />
         <TabButton
-          label={`High Priority (${highPriorityAlerts.length})`}
+          label={`High Priority (${priorityCounts['High Priority']})`}
           isActive={selectedPriority === 'High Priority'}
           onClick={() => setSelectedPriority('High Priority')}
         />
         <TabButton
-          label={`Medium Priority (${mediumPriorityAlerts.length})`}
+          label={`Medium Priority (${priorityCounts['Medium Priority']})`}
           isActive={selectedPriority === 'Medium Priority'}
           onClick={() => setSelectedPriority('Medium Priority')}
         />
@@ -72,8 +117,13 @@ export default function ExpiryAlerts() {
       {/* Alert Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {filteredAlerts.map((alert) => (
-          <AlertCard key={alert.alertId} alert={alert} />
+          <AlertCard key={alert.lotId} alert={alert} />
         ))}
+        {!filteredAlerts.length && !loading && (
+          <div className="bg-white rounded-lg border p-6 col-span-full text-sm text-gray-500">
+            No alerts in this priority bucket.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -113,7 +163,7 @@ function TabButton({ label, isActive, onClick }: { label: string; isActive: bool
   );
 }
 
-function AlertCard({ alert }: { alert: ExpiryAlert }) {
+function AlertCard({ alert }: { alert: AlertRecord }) {
   return (
     <div className="bg-white rounded-lg shadow p-6 relative">
       <div className="absolute top-4 right-4">
@@ -123,44 +173,40 @@ function AlertCard({ alert }: { alert: ExpiryAlert }) {
       </div>
 
       <div className="flex space-x-2 mb-4">
-        <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-          alert.priority === 'Critical' ? 'bg-red-100 text-red-700' :
-          alert.priority === 'High Priority' ? 'bg-orange-100 text-orange-700' :
-          'bg-yellow-100 text-yellow-700'
-        }`}>
+        <span
+          className={`px-3 py-1 text-xs font-medium rounded-full ${
+            alert.priority === 'Critical'
+              ? 'bg-red-100 text-red-700'
+              : alert.priority === 'High Priority'
+              ? 'bg-orange-100 text-orange-700'
+              : 'bg-yellow-100 text-yellow-700'
+          }`}
+        >
           {alert.priority}
         </span>
         <span className="px-3 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
-          {alert.category}
+          Supplier Alert
         </span>
       </div>
 
-      <h3 className="text-xl font-bold text-gray-800 mb-4">{alert.productName}</h3>
+      <h3 className="text-xl font-bold text-gray-800 mb-4">{alert.lotName}</h3>
 
       <div className="space-y-2 mb-6">
         <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Batch:</span>
-          <span className="text-gray-800 font-medium">{alert.batchNumber}</span>
+          <span className="text-gray-600">Supplier:</span>
+          <span className="text-gray-800 font-medium">{alert.supplierName}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-gray-600">Quantity:</span>
           <span className="text-gray-800 font-medium">{alert.quantity} units</span>
         </div>
         <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Expiry Date:</span>
-          <span className="text-gray-800 font-medium">{alert.expiryDate}</span>
+          <span className="text-gray-600">Products in lot:</span>
+          <span className="text-gray-800 font-medium">{alert.productCount}</span>
         </div>
         <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Days Left:</span>
-          <span className="text-red-600 font-medium">{alert.daysUntilExpiry} day{alert.daysUntilExpiry !== 1 ? 's' : ''}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Current Price:</span>
-          <span className="text-gray-800 font-medium">${alert.currentPrice.toFixed(2)}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Suggested Discount:</span>
-          <span className="text-green-600 font-medium">{alert.suggestedDiscount}%</span>
+          <span className="text-gray-600">Arrival Date:</span>
+          <span className="text-gray-800 font-medium">{alert.arrivalDate}</span>
         </div>
       </div>
 
@@ -169,13 +215,13 @@ function AlertCard({ alert }: { alert: ExpiryAlert }) {
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
-          <span>Apply Suggested Discount</span>
+          <span>Trigger Restock</span>
         </button>
         <button className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors flex items-center space-x-2">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          <span>View Details</span>
+          <span>View Lot</span>
         </button>
       </div>
     </div>

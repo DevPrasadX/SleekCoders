@@ -1,15 +1,17 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { suppliers } from '@/data/staticData';
 import { ScannedProduct } from '@/types';
 import { extractProductDetails, processImage } from '@/utils/ocr';
+import { useSuppliers } from '@/hooks/useApiData';
 
 // Debug: Log component renders
 console.log('🔧 ScanReceive component loaded');
 
 export default function ScanReceive() {
   const [selectedSupplier, setSelectedSupplier] = useState('');
+  const { data: supplierRecords, loading: suppliersLoading, error: suppliersError, refresh } = useSuppliers();
+
   const [barcode, setBarcode] = useState('');
   const [scannedProduct, setScannedProduct] = useState<Partial<ScannedProduct>>({});
   const [scannedItems, setScannedItems] = useState<Partial<ScannedProduct>[]>([]);
@@ -270,16 +272,31 @@ export default function ScanReceive() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Supplier</label>
-                <select
-                  value={selectedSupplier}
-                  onChange={(e) => setSelectedSupplier(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="">Select supplier</option>
-                  {suppliers.map((supplier) => (
-                    <option key={supplier} value={supplier}>{supplier}</option>
-                  ))}
-                </select>
+                <div className="space-y-2">
+                  <select
+                    value={selectedSupplier}
+                    onChange={(e) => setSelectedSupplier(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select supplier</option>
+                    {supplierRecords.map((supplier) => (
+                      <option key={supplier.SUPPLIER_ID} value={supplier.SUPPLIER_NAME}>
+                        {supplier.SUPPLIER_NAME}
+                      </option>
+                    ))}
+                  </select>
+                  {suppliersLoading && (
+                    <p className="text-xs text-gray-500">Loading supplier list...</p>
+                  )}
+                  {suppliersError && (
+                    <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-xs">
+                      <span>Failed to load suppliers.</span>
+                      <button onClick={refresh} className="underline">
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>

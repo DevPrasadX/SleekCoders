@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Stock Manager + AWS RDS
 
-## Getting Started
+This project now talks to the `projectX` MySQL database hosted on AWS RDS. All server actions happen through the new App Router API handlers under `src/app/api/*`.
 
-First, run the development server:
+## Prerequisites
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+1. Node.js 20+
+2. MySQL user with access to the RDS instance.
+3. The stored procedures defined in `database/projectX_procedures.sql`.
+
+## Environment variables
+
+Create a `.env.local` file with the following keys:
+
+```
+DB_HOST=sleekcoderstockmanagement.c10iuq0iw2dx.eu-north-1.rds.amazonaws.com
+DB_USER=SleekCoder
+DB_PASS=Pass#123
+DB_NAME=projectX
+DB_PORT=3306
+DEFAULT_EMPLOYEE_PASSWORD=ChangeMe123!
+NEXT_PUBLIC_DEFAULT_EMPLOYEE_PASSWORD=ChangeMe123!
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Install & run
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The app will be available at [http://localhost:3000](http://localhost:3000).
 
-## Learn More
+## API overview
 
-To learn more about Next.js, take a look at the following resources:
+- `GET /api/employees` → list employee records
+- `POST /api/employees` → create via `addEmployee`
+- `PUT /api/employees` → update via `updateEmployeeDetails`
+- `POST /api/auth/login` → validate credentials for any role
+- `POST /api/profile/password` → tunneling via `updateEmployeePassword`
+- `GET /api/products` → list products in the `PRODUCT` table
+- `POST /api/products` → create via `addProductDetails`
+- `GET /api/suppliers` / `POST /api/suppliers`
+- `GET /api/lots` / `POST /api/lots`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Each handler shares the connection helper in `src/lib/db.ts`, which manages pooled, SSL-enabled connections to AWS RDS. Client-side screens use `src/hooks/useApiData.ts` to stay in sync with these endpoints.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Stored procedures
 
-## Deploy on Vercel
+The SQL script in `database/projectX_procedures.sql` drops and recreates all procedures used by the API (`addEmployee`, `updateEmployeeDetails`, `addSupplierDetails`, `addProductDetails`, `addLOTDetails`, `updateEmployeePassword`). Run the file after any schema changes to keep the procedures in sync with the application.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## User management
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Store managers can add teammates from `store-manager/users`—new accounts receive the default password from the environment variables above.
+- Every authenticated user can visit `/profile` to change their password via the `updateEmployeePassword` stored procedure.
