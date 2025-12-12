@@ -1,19 +1,60 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { UserRole } from '@/types';
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole | ''>('');
+  const [role, setRole] = useState<string>('');
+  const [roles, setRoles] = useState<string[]>([]);
+  const [loadingRoles, setLoadingRoles] = useState(true);
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const roles: UserRole[] = ['Store Manager', 'Receiving Clerk', 'Cashier'];
+  // Fetch roles from API
+  useEffect(() => {
+    const fetchRoles = async () => {
+      try {
+        const response = await fetch('/api/roles/list');
+        if (response.ok) {
+          const roleNames = await response.json();
+          setRoles(roleNames);
+        } else {
+          // Fallback to default roles if API fails
+          setRoles(['Store Manager', 'Receiving Clerk', 'Cashier']);
+        }
+      } catch (error) {
+        console.error('Failed to fetch roles:', error);
+        // Fallback to default roles
+        setRoles(['Store Manager', 'Receiving Clerk', 'Cashier']);
+      } finally {
+        setLoadingRoles(false);
+      }
+    };
+
+    fetchRoles();
+  }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowRoleDropdown(false);
+      }
+    };
+
+    if (showRoleDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showRoleDropdown]);
 
   const handleLogin = async () => {
     if (!role) {
@@ -48,12 +89,33 @@ export default function LoginPage() {
         }),
       );
 
-      if (role === 'Store Manager') {
+      // Get dashboard route for this role dynamically
+      try {
+        const dashboardResponse = await fetch('/api/roles/dashboards');
+        if (dashboardResponse.ok) {
+          const roleDashboards: Record<string, string> = await dashboardResponse.json();
+          const dashboardRoute = roleDashboards[user.employeeRole];
+          
+          if (dashboardRoute) {
+            router.push(dashboardRoute);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch dashboard route:', err);
+      }
+
+      // Fallback to hardcoded routes if API fails
+      const roleLower = role.toLowerCase();
+      if (roleLower.includes('manager')) {
         router.push('/store-manager/dashboard');
-      } else if (role === 'Receiving Clerk') {
+      } else if (roleLower.includes('clerk')) {
         router.push('/receiving-clerk/dashboard');
-      } else {
+      } else if (roleLower.includes('cashier')) {
         router.push('/cashier/dashboard');
+      } else {
+        // Default to store manager if role not recognized
+        router.push('/store-manager/dashboard');
       }
     } catch (error) {
       const err = error as Error;
@@ -118,27 +180,33 @@ export default function LoginPage() {
               </button>
 
               {showRoleDropdown && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg">
-                  {roles.map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => {
-                        setRole(r);
-                        setShowRoleDropdown(false);
-                      }}
-                      className={`w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center justify-between ${
-                        role === r ? 'bg-blue-50' : ''
-                      }`}
-                    >
-                      {r}
-                      {role === r && (
-                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </button>
-                  ))}
+                <div ref={dropdownRef} className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                  {loadingRoles ? (
+                    <div className="px-4 py-2 text-sm text-gray-500">Loading roles...</div>
+                  ) : roles.length === 0 ? (
+                    <div className="px-4 py-2 text-sm text-gray-500">No roles available</div>
+                  ) : (
+                    roles.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => {
+                          setRole(r);
+                          setShowRoleDropdown(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center justify-between ${
+                          role === r ? 'bg-blue-50' : ''
+                        }`}
+                      >
+                        {r}
+                        {role === r && (
+                          <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </div>

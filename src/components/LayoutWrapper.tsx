@@ -26,6 +26,13 @@ export default function LayoutWrapper({ children }: LayoutWrapperProps) {
     }
   }, [router]);
 
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('user');
+      router.push('/login');
+    }
+  };
+
   if (!user) {
     return null;
   }
@@ -38,7 +45,12 @@ export default function LayoutWrapper({ children }: LayoutWrapperProps) {
         <div className="fixed inset-0 bg-black/40 z-30 lg:hidden" onClick={() => setIsSidebarOpen(false)} />
       )}
 
-      <Header userName={user.userName} userAvatar={user.avatar} onMenuClick={() => setIsSidebarOpen(prev => !prev)} />
+      <Header 
+        userName={user.userName} 
+        userAvatar={user.avatar} 
+        onMenuClick={() => setIsSidebarOpen(prev => !prev)}
+        onLogout={handleLogout}
+      />
 
       <main className="pt-16 p-4 sm:p-6 lg:ml-64">
         {children}

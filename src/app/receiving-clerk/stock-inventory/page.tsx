@@ -1,58 +1,136 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { useLots, useSuppliers } from '@/hooks/useApiData';
+import { useEffect, useMemo, useState } from 'react';
 
 type InventoryRecord = {
-  lotId: number;
+  itemID: number;
+  productName: string;
+  productCategory: string;
+  productPrice: number;
+  barcode: string;
   lotName: string;
-  supplierName: string;
-  units: number;
-  productCount: number;
-  arrivalDate: string;
-  status: 'Healthy' | 'Needs Attention';
+  supplierName: string | null;
+  quantity: number;
+  batchNumber: string | null;
+  manufacturingDate: string | null;
+  expiryDate: string | null;
+  status: 'Healthy' | 'Needs Attention' | 'Expired';
 };
 
 export default function ReceivingClerkStockInventory() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSupplier, setSelectedSupplier] = useState('All Suppliers');
   const [selectedStatus, setSelectedStatus] = useState<'All' | InventoryRecord['status']>('All');
+  const [records, setRecords] = useState<InventoryRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const { data: lots, loading: lotsLoading, error: lotsError, refresh: refreshLots } = useLots();
-  const {
-    data: suppliers,
-    loading: suppliersLoading,
-    error: suppliersError,
-    refresh: refreshSuppliers,
-  } = useSuppliers();
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const stored = sessionStorage.getItem('user');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        setUserId(parsed.userId);
+      } catch (err) {
+        console.error('Failed to parse user session', err);
+      }
+    }
+  }, []);
 
-  const derivedRecords = useMemo<InventoryRecord[]>(() => {
-    return lots.map((lot) => {
-      const supplierName =
-        suppliers.find((supplier) => supplier.SUPPLIER_ID === lot.SUPPLIER_ID)?.SUPPLIER_NAME ||
-        'Unknown Supplier';
-      const status: InventoryRecord['status'] = lot.LOT_QUANTITY >= 100 ? 'Healthy' : 'Needs Attention';
-      return {
-        lotId: lot.LOT_ID,
-        lotName: lot.LOT_NAME,
-        supplierName,
-        units: lot.LOT_QUANTITY,
-        productCount: lot.LOT_PRODUCT_COUNT,
-        arrivalDate: lot.LOT_DATE_OF_ARRIVAL,
-        status,
-      };
+  useEffect(() => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    async function fetchInventory() {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await fetch(`/api/inventory/items?employeeID=${encodeURIComponent(userId)}`, {
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || `Request failed with status ${response.status}`);
+        }
+
+        const payload = (await response.json()) as Array<{
+          itemID: number;
+          productName: string;
+          productCategory: string;
+          productPrice: number | string;
+          barcode: string;
+          lotName: string;
+          supplierName: string | null;
+          quantity: number;
+          batchNumber: string | null;
+          manufacturingDate: string | null;
+          expiryDate: string | null;
+        }>;
+
+        if (isMounted) {
+          const enriched = payload.map((item) => {
+            const normalizedPrice = Number(item.productPrice);
+            return {
+              ...item,
+              productPrice: Number.isFinite(normalizedPrice) ? normalizedPrice : 0,
+              status: deriveStatus(item.quantity, item.expiryDate),
+            };
+          });
+          setRecords(enriched);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setError(err instanceof Error ? err.message : 'Failed to load inventory');
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchInventory();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, refreshKey]);
+
+  const supplierOptions = useMemo(() => {
+    const unique = new Set<string>();
+    records.forEach((record) => {
+      if (record.supplierName) {
+        unique.add(record.supplierName);
+      }
     });
-  }, [lots, suppliers]);
+    return ['All Suppliers', ...Array.from(unique)];
+  }, [records]);
 
-  const filteredItems = derivedRecords.filter((record) => {
-    const matchesSearch =
-      record.lotName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.supplierName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesSupplier =
-      selectedSupplier === 'All Suppliers' || record.supplierName === selectedSupplier;
-    const matchesStatus = selectedStatus === 'All' || record.status === selectedStatus;
-    return matchesSearch && matchesSupplier && matchesStatus;
-  });
+  const filteredItems = useMemo(() => {
+    return records.filter((record) => {
+      const matchesSearch =
+        record.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        record.barcode.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        record.lotName.toLowerCase().includes(searchTerm.toLowerCase());
+
+      const matchesSupplier =
+        selectedSupplier === 'All Suppliers' || record.supplierName === selectedSupplier;
+
+      const matchesStatus = selectedStatus === 'All' || record.status === selectedStatus;
+
+      return matchesSearch && matchesSupplier && matchesStatus;
+    });
+  }, [records, searchTerm, selectedSupplier, selectedStatus]);
 
   const handleClearFilters = () => {
     setSearchTerm('');
@@ -60,12 +138,33 @@ export default function ReceivingClerkStockInventory() {
     setSelectedStatus('All');
   };
 
+  const handleRefresh = () => setRefreshKey((prev) => prev + 1);
+
+  const isEmptyState = !loading && filteredItems.length === 0;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-800">Stock Inventory</h1>
-        <p className="text-gray-600 mt-1">Monitor and manage all inventory items with expiry tracking.</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-800">My Received Products</h1>
+          <p className="text-gray-600 mt-1">
+            Review-only the SKUs you have registered. Other clerks cannot see these records.
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          disabled={loading || !userId}
+        >
+          Refresh
+        </button>
       </div>
+
+      {!userId && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-lg text-sm">
+          Unable to determine the current user. Please log in again.
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-gray-50 rounded-lg p-4">
@@ -80,7 +179,7 @@ export default function ReceivingClerkStockInventory() {
           <div className="relative">
             <input
               type="text"
-              placeholder="Search by name or batch..."
+              placeholder="Search by product, barcode or lot..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -95,10 +194,9 @@ export default function ReceivingClerkStockInventory() {
             onChange={(e) => setSelectedSupplier(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
-            <option>All Suppliers</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier.SUPPLIER_ID} value={supplier.SUPPLIER_NAME}>
-                {supplier.SUPPLIER_NAME}
+            {supplierOptions.map((supplier) => (
+              <option key={supplier} value={supplier}>
+                {supplier}
               </option>
             ))}
           </select>
@@ -111,12 +209,13 @@ export default function ReceivingClerkStockInventory() {
             <option value="All">All Status</option>
             <option value="Healthy">Healthy</option>
             <option value="Needs Attention">Needs Attention</option>
+            <option value="Expired">Expired</option>
           </select>
         </div>
 
-        <div className="flex items-center justify-between mt-4">
+        <div className="flex items-center justify-between mt-4 flex-wrap gap-2">
           <div className="text-sm text-gray-600">
-            Showing {filteredItems.length} of {derivedRecords.length} lots
+            Showing {filteredItems.length} of {records.length} items
           </div>
           <button
             onClick={handleClearFilters}
@@ -129,59 +228,87 @@ export default function ReceivingClerkStockInventory() {
 
       {/* Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        {(lotsLoading || suppliersLoading) && (
-          <div className="p-4 text-sm text-gray-600">Loading inventory data...</div>
-        )}
-        {(lotsError || suppliersError) && (
+        {loading && <div className="p-4 text-sm text-gray-600">Loading inventory data...</div>}
+        {error && (
           <div className="p-4 bg-red-50 border-b border-red-200 text-sm text-red-700 flex items-center justify-between">
-            <span>Failed to load data.</span>
-            <button
-              onClick={() => {
-                refreshLots();
-                refreshSuppliers();
-              }}
-              className="px-3 py-1 text-xs bg-red-600 text-white rounded"
-            >
+            <span>{error}</span>
+            <button onClick={handleRefresh} className="px-3 py-1 text-xs bg-red-600 text-white rounded">
               Retry
             </button>
           </div>
         )}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lot Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Supplier</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Units</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Products</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Arrival Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredItems.map((item) => (
-                <tr key={item.lotId} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.lotName}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.supplierName}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.units}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.productCount}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.arrivalDate}</td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span
-                      className={`px-3 py-1 text-xs font-medium rounded-full ${
-                        item.status === 'Healthy' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
-                      }`}
-                    >
-                      {item.status}
-                    </span>
-                  </td>
+        {isEmptyState && (
+          <div className="p-6 text-center text-gray-500">
+            No products match your filters yet. Add items from the Scan & Receive page.
+          </div>
+        )}
+        {!isEmptyState && (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Barcode</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lot</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Supplier</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expiry</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredItems.map((item) => (
+                  <tr key={item.itemID} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      <div>{item.productName}</div>
+                      <div className="text-xs text-gray-500">{item.productCategory}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.barcode}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <div>{item.lotName}</div>
+                      {item.batchNumber && <div className="text-xs text-gray-400">Batch: {item.batchNumber}</div>}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {item.supplierName || '—'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.quantity}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {item.expiryDate ? item.expiryDate : '—'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span
+                        className={`px-3 py-1 text-xs font-medium rounded-full ${
+                          item.status === 'Healthy'
+                            ? 'bg-green-100 text-green-800'
+                            : item.status === 'Expired'
+                            ? 'bg-red-100 text-red-800'
+                            : 'bg-yellow-100 text-yellow-800'
+                        }`}
+                      >
+                        {item.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function deriveStatus(quantity: number, expiryDate: string | null): InventoryRecord['status'] {
+  if (expiryDate) {
+    const expiry = new Date(expiryDate);
+    if (!Number.isNaN(expiry.getTime()) && expiry.getTime() < Date.now()) {
+      return 'Expired';
+    }
+  }
+  if (quantity < 20) {
+    return 'Needs Attention';
+  }
+  return 'Healthy';
 }
 

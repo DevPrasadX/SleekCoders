@@ -1,16 +1,69 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { ScannedProduct } from '@/types';
+import { ScannedProduct, Product } from '@/types';
 import { extractProductDetails, processImage } from '@/utils/ocr';
-import { useSuppliers } from '@/hooks/useApiData';
+import { useLots, useSuppliers, useProducts } from '@/hooks/useApiData';
+import type { LotRecord, SupplierRecord } from '@/types/database';
 
 // Debug: Log component renders
 console.log('🔧 ScanReceive component loaded');
 
 export default function ScanReceive() {
   const [selectedSupplier, setSelectedSupplier] = useState('');
-  const { data: supplierRecords, loading: suppliersLoading, error: suppliersError, refresh } = useSuppliers();
+  const [supplierInput, setSupplierInput] = useState('');
+  const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null);
+  const [showNewSupplierModal, setShowNewSupplierModal] = useState(false);
+  const [newSupplierData, setNewSupplierData] = useState({
+    name: '',
+    dateOfJoining: new Date().toISOString().split('T')[0], // Today's date as default
+    poc: '',
+    contactNumber: '',
+  });
+  const [isCreatingSupplier, setIsCreatingSupplier] = useState(false);
+  const [selectedLotId, setSelectedLotId] = useState<number | null>(null);
+  const [lotInput, setLotInput] = useState('');
+  const [showLotSuggestions, setShowLotSuggestions] = useState(false);
+  const [showNewLotModal, setShowNewLotModal] = useState(false);
+  const [newLotData, setNewLotData] = useState({
+    lotName: '',
+    dateOfArrival: new Date().toISOString().split('T')[0], // Today's date as default
+    productCount: 0,
+    quantity: 0,
+  });
+  const [isCreatingLot, setIsCreatingLot] = useState(false);
+  const [showNewProductModal, setShowNewProductModal] = useState(false);
+  const [newProductData, setNewProductData] = useState({
+    name: '',
+    description: '',
+    standardPrice: 0,
+    category: '',
+  });
+  const [isCreatingProduct, setIsCreatingProduct] = useState(false);
+  const [productNotFoundError, setProductNotFoundError] = useState(false);
+  const [employeeID, setEmployeeID] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  const {
+    data: supplierRecords,
+    loading: suppliersLoading,
+    error: suppliersError,
+    refresh: refreshSuppliers,
+  } = useSuppliers();
+  const {
+    data: lots,
+    loading: lotsLoading,
+    error: lotsError,
+    refresh: refreshLots,
+  } = useLots();
+  const {
+    data: products,
+    loading: productsLoading,
+    error: productsError,
+    refresh: refreshProducts,
+  } = useProducts();
 
   const [barcode, setBarcode] = useState('');
   const [scannedProduct, setScannedProduct] = useState<Partial<ScannedProduct>>({});
@@ -26,6 +79,19 @@ export default function ScanReceive() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // Load current employee ID from session
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = sessionStorage.getItem('user');
+    if (!stored) return;
+    try {
+      const parsed = JSON.parse(stored);
+      setEmployeeID(parsed.userId);
+    } catch (err) {
+      console.error('Failed to parse user session in ScanReceive', err);
+    }
+  }, []);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -240,9 +306,81 @@ export default function ScanReceive() {
     };
   }, [capturedImage]);
 
-  const handleAddToShipment = () => {
-    if (scannedProduct.productName && scannedProduct.batchNumber) {
-      setScannedItems([...scannedItems, { ...scannedProduct }]);
+  const handleAddToShipment = async () => {
+    setSubmitError(null);
+    setSubmitSuccess(null);
+
+    if (!employeeID) {
+      setSubmitError('Unable to determine current employee. Please log in again.');
+      return;
+    }
+
+    if (!selectedSupplierId) {
+      setSubmitError('Please enter and select a valid supplier name from the database.');
+      return;
+    }
+
+    if (!selectedLotId) {
+      setSubmitError('Please enter and select a valid lot number from the database.');
+      return;
+    }
+
+    // Find product by name from scanned product
+    const matchedProduct = products.find(
+      (p: Product) => p.name.toLowerCase() === scannedProduct.productName?.toLowerCase()
+    );
+
+    if (!matchedProduct) {
+      setProductNotFoundError(true);
+      setSubmitError(`Product "${scannedProduct.productName}" not found. Would you like to create it?`);
+      return;
+    }
+
+    const productID = matchedProduct.productId;
+
+    if (!barcode.trim()) {
+      setSubmitError('Barcode is required.');
+      return;
+    }
+
+    if (!scannedProduct.productName || !scannedProduct.batchNumber) {
+      setSubmitError('Product name and batch number are required.');
+      return;
+    }
+
+    const quantity = scannedProduct.quantity && scannedProduct.quantity > 0 ? scannedProduct.quantity : 1;
+
+    try {
+      const res = await fetch('/api/inventory/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productID: Number(productID),
+          lotID: selectedLotId,
+          barcode,
+          quantity,
+          manufacturingDate: scannedProduct.manufacturingDate || null,
+          expiryDate: scannedProduct.expiryDate || null,
+          batchNumber: scannedProduct.batchNumber || null,
+          employeeID,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setSubmitError(
+          data.error ||
+            (res.status === 409
+              ? 'This barcode is already registered by another receiving clerk.'
+              : 'Failed to save item to inventory.'),
+        );
+        return;
+      }
+
+      setScannedItems([...scannedItems, { ...scannedProduct, quantity }]);
+      setSubmitSuccess(data.message || 'Inventory item saved.');
+
       // Reset form
       setScannedProduct({});
       setBarcode('');
@@ -253,7 +391,323 @@ export default function ScanReceive() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    } catch (error) {
+      console.error('Error saving inventory item:', error);
+      setSubmitError('Unexpected error while saving inventory item.');
     }
+  };
+
+  // Filter suppliers based on input
+  const filteredSuppliers = supplierRecords.filter((supplier) =>
+    supplier.SUPPLIER_NAME.toLowerCase().includes(supplierInput.toLowerCase())
+  );
+
+  // Filter lots based on input and selected supplier
+  const filteredLots = (() => {
+    let availableLots = lots;
+    if (selectedSupplierId) {
+      availableLots = lots.filter((lot) => lot.SUPPLIER_ID === selectedSupplierId);
+    }
+    if (!lotInput) return availableLots;
+    return availableLots.filter((lot) =>
+      lot.LOT_NAME.toLowerCase().includes(lotInput.toLowerCase()) ||
+      lot.LOT_ID.toString().includes(lotInput)
+    );
+  })();
+
+  // Handle supplier input change
+  const handleSupplierInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSupplierInput(value);
+    setShowSupplierSuggestions(true);
+    
+    // Check if exact match exists
+    const exactMatch = supplierRecords.find(
+      (s) => s.SUPPLIER_NAME.toLowerCase() === value.toLowerCase()
+    );
+    
+    if (exactMatch) {
+      setSelectedSupplier(exactMatch.SUPPLIER_NAME);
+      setSelectedSupplierId(exactMatch.SUPPLIER_ID);
+    } else {
+      setSelectedSupplier('');
+      setSelectedSupplierId(null);
+    }
+  };
+
+  // Handle supplier selection
+  const handleSupplierSelect = (supplier: SupplierRecord) => {
+    setSupplierInput(supplier.SUPPLIER_NAME);
+    setSelectedSupplier(supplier.SUPPLIER_NAME);
+    setSelectedSupplierId(supplier.SUPPLIER_ID);
+    setShowSupplierSuggestions(false);
+    // Reset lot selection when supplier changes
+    setLotInput('');
+    setSelectedLotId(null);
+  };
+
+  // Handle creating a new supplier
+  const handleCreateNewSupplier = async () => {
+    if (!newSupplierData.name || !newSupplierData.dateOfJoining || !newSupplierData.poc || !newSupplierData.contactNumber) {
+      setSubmitError('Please fill in all required fields: name, date of joining, point of contact, and contact number.');
+      return;
+    }
+
+    setIsCreatingSupplier(true);
+    setSubmitError(null);
+
+    try {
+      const res = await fetch('/api/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newSupplierData.name,
+          dateOfJoining: newSupplierData.dateOfJoining,
+          poc: newSupplierData.poc,
+          contactNumber: newSupplierData.contactNumber,
+          productCount: 0,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSubmitError(data.error || 'Failed to create supplier.');
+        setIsCreatingSupplier(false);
+        return;
+      }
+
+      // Refresh suppliers list
+      await refreshSuppliers();
+
+      // Find the newly created supplier
+      const newSupplier = data.find((s: SupplierRecord) => s.SUPPLIER_NAME === newSupplierData.name);
+      
+      if (newSupplier) {
+        setSupplierInput(newSupplier.SUPPLIER_NAME);
+        setSelectedSupplier(newSupplier.SUPPLIER_NAME);
+        setSelectedSupplierId(newSupplier.SUPPLIER_ID);
+      }
+
+      // Close modal and reset form
+      setShowNewSupplierModal(false);
+      setNewSupplierData({
+        name: '',
+        dateOfJoining: new Date().toISOString().split('T')[0],
+        poc: '',
+        contactNumber: '',
+      });
+      setShowSupplierSuggestions(false);
+      setSubmitSuccess('Supplier created successfully!');
+      setIsCreatingSupplier(false);
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSubmitSuccess(null), 3000);
+    } catch (error) {
+      console.error('Error creating supplier:', error);
+      setSubmitError('Unexpected error while creating supplier.');
+      setIsCreatingSupplier(false);
+    }
+  };
+
+  // Handle opening new supplier modal
+  const handleOpenNewSupplierModal = () => {
+    setNewSupplierData({
+      name: supplierInput,
+      dateOfJoining: new Date().toISOString().split('T')[0],
+      poc: '',
+      contactNumber: '',
+    });
+    setShowNewSupplierModal(true);
+    setShowSupplierSuggestions(false);
+  };
+
+  // Handle lot input change
+  const handleLotInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setLotInput(value);
+    setShowLotSuggestions(true);
+    
+    // Check if exact match exists in filtered lots
+    const exactMatch = filteredLots.find(
+      (lot) => lot.LOT_NAME.toLowerCase() === value.toLowerCase() ||
+               lot.LOT_ID.toString() === value
+    );
+    
+    if (exactMatch) {
+      setSelectedLotId(exactMatch.LOT_ID);
+    } else {
+      setSelectedLotId(null);
+    }
+  };
+
+  // Handle lot selection
+  const handleLotSelect = (lot: LotRecord) => {
+    setLotInput(lot.LOT_NAME);
+    setSelectedLotId(lot.LOT_ID);
+    setShowLotSuggestions(false);
+  };
+
+  // Handle creating a new lot
+  const handleCreateNewLot = async () => {
+    if (!selectedSupplierId) {
+      setSubmitError('Please select a supplier first before creating a lot.');
+      return;
+    }
+
+    if (!newLotData.lotName || !newLotData.dateOfArrival || newLotData.quantity === undefined || newLotData.quantity < 0) {
+      setSubmitError('Please fill in all required fields: lot name, date of arrival, and quantity (must be 0 or greater).');
+      return;
+    }
+
+    setIsCreatingLot(true);
+    setSubmitError(null);
+
+    try {
+      const res = await fetch('/api/lots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          supplierID: selectedSupplierId,
+          lotName: newLotData.lotName,
+          dateOfArrival: newLotData.dateOfArrival,
+          productCount: newLotData.productCount || 0,
+          quantity: newLotData.quantity,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSubmitError(data.error || 'Failed to create lot.');
+        setIsCreatingLot(false);
+        return;
+      }
+
+      // Refresh lots list
+      await refreshLots();
+
+      // Find the newly created lot
+      const newLot = data.find((lot: LotRecord) => 
+        lot.LOT_NAME === newLotData.lotName && lot.SUPPLIER_ID === selectedSupplierId
+      );
+      
+      if (newLot) {
+        setLotInput(newLot.LOT_NAME);
+        setSelectedLotId(newLot.LOT_ID);
+      }
+
+      // Close modal and reset form
+      setShowNewLotModal(false);
+      setNewLotData({
+        lotName: '',
+        dateOfArrival: new Date().toISOString().split('T')[0],
+        productCount: 0,
+        quantity: 0,
+      });
+      setShowLotSuggestions(false);
+      setSubmitSuccess('Lot created successfully!');
+      setIsCreatingLot(false);
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSubmitSuccess(null), 3000);
+    } catch (error) {
+      console.error('Error creating lot:', error);
+      setSubmitError('Unexpected error while creating lot.');
+      setIsCreatingLot(false);
+    }
+  };
+
+  // Handle opening new lot modal
+  const handleOpenNewLotModal = () => {
+    if (!selectedSupplierId) {
+      setSubmitError('Please select a supplier first before creating a lot.');
+      return;
+    }
+    setNewLotData({
+      lotName: lotInput,
+      dateOfArrival: new Date().toISOString().split('T')[0],
+      productCount: 0,
+      quantity: 0,
+    });
+    setShowNewLotModal(true);
+    setShowLotSuggestions(false);
+  };
+
+  // Handle creating a new product
+  const handleCreateNewProduct = async () => {
+    if (!newProductData.name || !newProductData.category || newProductData.standardPrice === undefined || newProductData.standardPrice < 0) {
+      setSubmitError('Please fill in all required fields: name, category, and standard price (must be 0 or greater).');
+      return;
+    }
+
+    setIsCreatingProduct(true);
+    setSubmitError(null);
+
+    try {
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newProductData.name,
+          description: newProductData.description || '',
+          standardPrice: newProductData.standardPrice,
+          category: newProductData.category,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSubmitError(data.error || 'Failed to create product.');
+        setIsCreatingProduct(false);
+        return;
+      }
+
+      // Refresh products list
+      await refreshProducts();
+
+      // Find the newly created product
+      const newProduct = data.find((p: Product) => p.name === newProductData.name);
+      
+      if (newProduct) {
+        // Update scanned product with the new product name
+        setScannedProduct({ ...scannedProduct, productName: newProduct.name });
+      }
+
+      // Close modal and reset form
+      setShowNewProductModal(false);
+      setNewProductData({
+        name: '',
+        description: '',
+        standardPrice: 0,
+        category: '',
+      });
+      setProductNotFoundError(false);
+      setSubmitError(null);
+      setSubmitSuccess('Product created successfully! You can now add it to the shipment.');
+      setIsCreatingProduct(false);
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSubmitSuccess(null), 3000);
+    } catch (error) {
+      console.error('Error creating product:', error);
+      setSubmitError('Unexpected error while creating product.');
+      setIsCreatingProduct(false);
+    }
+  };
+
+  // Handle opening new product modal
+  const handleOpenNewProductModal = () => {
+    setNewProductData({
+      name: scannedProduct.productName || '',
+      description: '',
+      standardPrice: 0,
+      category: '',
+    });
+    setShowNewProductModal(true);
+    setProductNotFoundError(false);
+    setSubmitError(null);
   };
 
   return (
@@ -272,29 +726,121 @@ export default function ScanReceive() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Supplier</label>
-                <div className="space-y-2">
-                  <select
-                    value={selectedSupplier}
-                    onChange={(e) => setSelectedSupplier(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="">Select supplier</option>
-                    {supplierRecords.map((supplier) => (
-                      <option key={supplier.SUPPLIER_ID} value={supplier.SUPPLIER_NAME}>
-                        {supplier.SUPPLIER_NAME}
-                      </option>
-                    ))}
-                  </select>
-                  {suppliersLoading && (
-                    <p className="text-xs text-gray-500">Loading supplier list...</p>
+                <div className="space-y-2 relative">
+                  <input
+                    type="text"
+                    value={supplierInput}
+                    onChange={handleSupplierInputChange}
+                    onFocus={() => setShowSupplierSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowSupplierSuggestions(false), 200)}
+                    placeholder="Type supplier name..."
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      selectedSupplierId 
+                        ? 'border-green-300 bg-green-50' 
+                        : supplierInput && !selectedSupplierId
+                        ? 'border-yellow-300 bg-yellow-50'
+                        : 'border-gray-300'
+                    }`}
+                  />
+                  {showSupplierSuggestions && filteredSuppliers.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {filteredSuppliers.map((supplier) => (
+                        <button
+                          key={supplier.SUPPLIER_ID}
+                          type="button"
+                          onClick={() => handleSupplierSelect(supplier)}
+                          className="w-full text-left px-4 py-2 hover:bg-blue-50 focus:bg-blue-50 focus:outline-none"
+                        >
+                          {supplier.SUPPLIER_NAME}
+                        </button>
+                      ))}
+                    </div>
                   )}
-                  {suppliersError && (
+                  {supplierInput && !selectedSupplierId && filteredSuppliers.length === 0 && (
+                    <div className="mt-1">
+                      <p className="text-xs text-yellow-600 mb-2">No matching supplier found.</p>
+                      <button
+                        type="button"
+                        onClick={handleOpenNewSupplierModal}
+                        className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 transition-colors"
+                      >
+                        + Add "{supplierInput}" as new supplier
+                      </button>
+                    </div>
+                  )}
+                  {selectedSupplierId && (
+                    <p className="text-xs text-green-600 mt-1">✓ Valid supplier selected</p>
+                  )}
+                  {(suppliersLoading || lotsLoading || productsLoading) && (
+                    <p className="text-xs text-gray-500">Loading supplier, lot and product data...</p>
+                  )}
+                  {(suppliersError || lotsError || productsError) && (
                     <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-xs">
-                      <span>Failed to load suppliers.</span>
-                      <button onClick={refresh} className="underline">
+                      <span>Failed to load reference data.</span>
+                      <button
+                        onClick={() => {
+                          refreshSuppliers();
+                          refreshLots();
+                          refreshProducts();
+                        }}
+                        className="underline"
+                      >
                         Retry
                       </button>
                     </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Lot selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Lot Number</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={lotInput}
+                    onChange={handleLotInputChange}
+                    onFocus={() => setShowLotSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowLotSuggestions(false), 200)}
+                    placeholder={selectedSupplierId ? "Type lot name or number..." : "Select supplier first"}
+                    disabled={!selectedSupplierId}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      selectedLotId 
+                        ? 'border-green-300 bg-green-50' 
+                        : lotInput && !selectedLotId
+                        ? 'border-yellow-300 bg-yellow-50'
+                        : 'border-gray-300'
+                    } ${!selectedSupplierId ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  />
+                  {showLotSuggestions && filteredLots.length > 0 && selectedSupplierId && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {filteredLots.map((lot) => (
+                        <button
+                          key={lot.LOT_ID}
+                          type="button"
+                          onClick={() => handleLotSelect(lot)}
+                          className="w-full text-left px-4 py-2 hover:bg-blue-50 focus:bg-blue-50 focus:outline-none"
+                        >
+                          <div className="font-medium">{lot.LOT_NAME}</div>
+                          <div className="text-xs text-gray-500">Lot ID: {lot.LOT_ID} • Qty: {lot.LOT_QUANTITY}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {lotInput && !selectedLotId && filteredLots.length === 0 && selectedSupplierId && (
+                    <div className="mt-1">
+                      <p className="text-xs text-yellow-600 mb-2">No matching lot found.</p>
+                      <button
+                        type="button"
+                        onClick={handleOpenNewLotModal}
+                        className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 transition-colors"
+                      >
+                        + Add "{lotInput}" as new lot
+                      </button>
+                    </div>
+                  )}
+                  {selectedLotId && (
+                    <p className="text-xs text-green-600 mt-1">✓ Valid lot selected</p>
                   )}
                 </div>
               </div>
@@ -567,9 +1113,37 @@ export default function ScanReceive() {
                 </div>
               </div>
 
+              {submitError && (
+                <div className="mt-2">
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-xs mb-2">
+                    {submitError}
+                  </div>
+                  {productNotFoundError && (
+                    <button
+                      type="button"
+                      onClick={handleOpenNewProductModal}
+                      className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 transition-colors"
+                    >
+                      + Create "{scannedProduct.productName}" as new product
+                    </button>
+                  )}
+                </div>
+              )}
+              {submitSuccess && (
+                <div className="mt-2 bg-green-50 border border-green-200 text-green-700 px-3 py-2 rounded text-xs">
+                  {submitSuccess}
+                </div>
+              )}
+
               <button
                 onClick={handleAddToShipment}
-                disabled={!scannedProduct.productName || !scannedProduct.batchNumber}
+                disabled={
+                  !scannedProduct.productName ||
+                  !scannedProduct.batchNumber ||
+                  !selectedSupplierId ||
+                  !selectedLotId ||
+                  !barcode
+                }
                 className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -606,6 +1180,406 @@ export default function ScanReceive() {
           )}
         </div>
       </div>
+
+      {/* New Supplier Modal */}
+      {showNewSupplierModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Add New Supplier</h3>
+              <button
+                onClick={() => {
+                  setShowNewSupplierModal(false);
+                  setNewSupplierData({
+                    name: '',
+                    dateOfJoining: new Date().toISOString().split('T')[0],
+                    poc: '',
+                    contactNumber: '',
+                  });
+                  setSubmitError(null);
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Supplier Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newSupplierData.name}
+                  onChange={(e) => setNewSupplierData({ ...newSupplierData, name: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter supplier name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Date of Joining <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={newSupplierData.dateOfJoining}
+                  onChange={(e) => setNewSupplierData({ ...newSupplierData, dateOfJoining: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Point of Contact (POC) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newSupplierData.poc}
+                  onChange={(e) => setNewSupplierData({ ...newSupplierData, poc: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter contact person name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Contact Number <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="tel"
+                  value={newSupplierData.contactNumber}
+                  onChange={(e) => setNewSupplierData({ ...newSupplierData, contactNumber: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter contact number"
+                />
+              </div>
+
+              {submitError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+                  {submitError}
+                </div>
+              )}
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  onClick={() => {
+                    setShowNewSupplierModal(false);
+                    setNewSupplierData({
+                      name: '',
+                      dateOfJoining: new Date().toISOString().split('T')[0],
+                      poc: '',
+                      contactNumber: '',
+                    });
+                    setSubmitError(null);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  disabled={isCreatingSupplier}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateNewSupplier}
+                  disabled={isCreatingSupplier || !newSupplierData.name || !newSupplierData.dateOfJoining || !newSupplierData.poc || !newSupplierData.contactNumber}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                >
+                  {isCreatingSupplier ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      <span>Create Supplier</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Lot Modal */}
+      {showNewLotModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Add New Lot</h3>
+              <button
+                onClick={() => {
+                  setShowNewLotModal(false);
+                  setNewLotData({
+                    lotName: '',
+                    dateOfArrival: new Date().toISOString().split('T')[0],
+                    productCount: 0,
+                    quantity: 0,
+                  });
+                  setSubmitError(null);
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-blue-800">
+                  <span className="font-semibold">Supplier:</span> {selectedSupplier || 'Not selected'}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Lot Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newLotData.lotName}
+                  onChange={(e) => setNewLotData({ ...newLotData, lotName: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter lot name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Date of Arrival <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={newLotData.dateOfArrival}
+                  onChange={(e) => setNewLotData({ ...newLotData, dateOfArrival: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Initial Quantity <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={newLotData.quantity}
+                  onChange={(e) => setNewLotData({ ...newLotData, quantity: parseInt(e.target.value) || 0 })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter initial quantity"
+                />
+                <p className="text-xs text-gray-500 mt-1">Enter 0 if quantity will be added later</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Product Count
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={newLotData.productCount}
+                  onChange={(e) => setNewLotData({ ...newLotData, productCount: parseInt(e.target.value) || 0 })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter product count (optional)"
+                />
+                <p className="text-xs text-gray-500 mt-1">Number of different products in this lot (default: 0)</p>
+              </div>
+
+              {submitError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+                  {submitError}
+                </div>
+              )}
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  onClick={() => {
+                    setShowNewLotModal(false);
+                    setNewLotData({
+                      lotName: '',
+                      dateOfArrival: new Date().toISOString().split('T')[0],
+                      productCount: 0,
+                      quantity: 0,
+                    });
+                    setSubmitError(null);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  disabled={isCreatingLot}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateNewLot}
+                  disabled={isCreatingLot || !newLotData.lotName || !newLotData.dateOfArrival || newLotData.quantity === undefined || newLotData.quantity < 0}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                >
+                  {isCreatingLot ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      <span>Create Lot</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Product Modal */}
+      {showNewProductModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Add New Product</h3>
+              <button
+                onClick={() => {
+                  setShowNewProductModal(false);
+                  setNewProductData({
+                    name: '',
+                    description: '',
+                    standardPrice: 0,
+                    category: '',
+                  });
+                  setSubmitError(null);
+                  setProductNotFoundError(false);
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Product Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newProductData.name}
+                  onChange={(e) => setNewProductData({ ...newProductData, name: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter product name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Category <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newProductData.category}
+                  onChange={(e) => setNewProductData({ ...newProductData, category: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter product category (e.g., Dairy, Produce, etc.)"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Standard Price <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={newProductData.standardPrice}
+                  onChange={(e) => setNewProductData({ ...newProductData, standardPrice: parseFloat(e.target.value) || 0 })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter standard price"
+                />
+                <p className="text-xs text-gray-500 mt-1">Enter 0 if price will be set later</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Description
+                </label>
+                <textarea
+                  value={newProductData.description}
+                  onChange={(e) => setNewProductData({ ...newProductData, description: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter product description (optional)"
+                  rows={3}
+                />
+              </div>
+
+              {submitError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+                  {submitError}
+                </div>
+              )}
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  onClick={() => {
+                    setShowNewProductModal(false);
+                    setNewProductData({
+                      name: '',
+                      description: '',
+                      standardPrice: 0,
+                      category: '',
+                    });
+                    setSubmitError(null);
+                    setProductNotFoundError(false);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  disabled={isCreatingProduct}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateNewProduct}
+                  disabled={isCreatingProduct || !newProductData.name || !newProductData.category || newProductData.standardPrice === undefined || newProductData.standardPrice < 0}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                >
+                  {isCreatingProduct ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      <span>Create Product</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

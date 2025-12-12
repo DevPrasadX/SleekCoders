@@ -26,3 +26,17 @@ export interface LotRecord {
   LOT_QUANTITY: number;
 }
 
+export interface InventoryItemRecord {
+  itemID: number;
+  PRODUCT_ID: number;
+  LOT_ID: number;
+  barcode: string;
+  quantity: number;
+  manufacturingDate: string | null;
+  expiryDate: string | null;
+  batchNumber: string | null;
+  createdByEmployeeID: string;
+  createdAt: string;
+  updatedAt: string;
+}
+

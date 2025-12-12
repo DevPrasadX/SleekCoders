@@ -40,7 +40,7 @@ function getPool() {
   return pool;
 }
 
-async function getConnection(): Promise<PoolConnection> {
+export async function getConnection(): Promise<PoolConnection> {
   return getPool().getConnection();
 }
 
